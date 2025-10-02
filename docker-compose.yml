@@ -1,0 +1,37 @@
+version: '4.34.3'
+name: MartCom
+
+services:
+  app:
+    container_name: backend-server
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    depends_on:
+      - postgresql
+    ports:
+      - "3000:3000"
+    env_file:
+      - ./server/.env
+
+  postgresql:
+    image: postgres
+    ports:
+      - "5431:5432"
+    environment:
+      - POSTGRES_PASSWORD=password
+    volumes:
+      - ./db_backup:/docker-entrypoint-initdb.d #initialize database
+      - pgdata:/var/lib/postgresql/data # persist data
+
+  client:
+    container_name: frontend-server
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+
+volumes:
+  pgdata:
+    driver: local
