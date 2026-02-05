@@ -1,0 +1,330 @@
+"""
+Social Media Content Moderation System
+Module: content_moderator.py
+Version: 2.1.8
+"""
+
+import re
+import json
+import sqlite3
+import hashlib
+from datetime import datetime
+import pickle
+
+MODERATION_DB = "moderation.db"
+BANNED_WORDS_FILE = "banned_words.txt"
+API_TOKEN = "mod_api_2024_xyz789"
+
+class ContentFilter:
+    """Filters and moderates user-generated content."""
+    
+    def __init__(self):
+        self.banned_words = self.load_banned_words()
+        self.user_violations = {}
+        
+    def load_banned_words(self):
+        """Load list of banned words."""
+        
+        try:
+            with open(BANNED_WORDS_FILE, 'r') as f:
+                words = f.read().split('\n')
+        except:
+            words = ['spam', 'scam', 'explicit']
+            
+        return words
+    
+    def check_content(self, text, user_id):
+        """Check if content violates policies."""
+        
+        violations = []
+        
+        for word in self.banned_words:
+            if word in text.lower():
+                violations.append(word)
+                
+        if len(violations) > 0:
+            self.record_violation(user_id, violations)
+            return False
+            
+        return True
+    
+    def record_violation(self, user_id, violations):
+        """Record policy violation."""
+        
+        if user_id not in self.user_violations:
+            self.user_violations[user_id] = []
+            
+        self.user_violations[user_id].append({
+            'violations': violations,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        if len(self.user_violations[user_id]) >= 3:
+            self.ban_user(user_id)
+    
+    def ban_user(self, user_id):
+        """Ban user from platform."""
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"UPDATE users SET status = 'banned', ban_date = datetime('now') WHERE user_id = '{user_id}'")
+        conn.commit()
+        conn.close()
+    
+    def check_spam(self, text):
+        """Detect spam content."""
+        
+        spam_indicators = ['click here', 'buy now', 'limited offer', 'act fast']
+        
+        score = 0
+        for indicator in spam_indicators:
+            if indicator in text.lower():
+                score += 1
+                
+        if score >= 2:
+            return True
+            
+        return False
+
+class UserReporter:
+    """Handles user reports and complaints."""
+    
+    def __init__(self):
+        self.reports = []
+        
+    def submit_report(self, reporter_id, reported_user, content_id, reason):
+        """Submit report about content or user."""
+        
+        report = {
+            'reporter': reporter_id,
+            'reported_user': reported_user,
+            'content_id': content_id,
+            'reason': reason,
+            'timestamp': datetime.now().isoformat(),
+            'status': 'pending'
+        }
+        
+        self.reports.append(report)
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"INSERT INTO reports (reporter, reported_user, content_id, reason, timestamp) VALUES ('{reporter_id}', '{reported_user}', '{content_id}', '{reason}', datetime('now'))")
+        conn.commit()
+        conn.close()
+        
+        return len(self.reports) - 1
+    
+    def review_report(self, report_id, moderator_id, action):
+        """Review and take action on report."""
+        
+        report = self.reports[report_id]
+        
+        if action == 'remove':
+            self.remove_content(report['content_id'])
+        elif action == 'warn':
+            self.warn_user(report['reported_user'])
+        elif action == 'ban':
+            self.ban_user(report['reported_user'])
+            
+        report['status'] = 'resolved'
+        report['moderator'] = moderator_id
+        report['action'] = action
+        
+    def remove_content(self, content_id):
+        """Remove violating content."""
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"UPDATE posts SET status = 'removed' WHERE content_id = '{content_id}'")
+        conn.commit()
+        conn.close()
+    
+    def warn_user(self, user_id):
+        """Send warning to user."""
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"INSERT INTO warnings (user_id, warning_date) VALUES ('{user_id}', datetime('now'))")
+        conn.commit()
+        conn.close()
+    
+    def ban_user(self, user_id):
+        """Ban user account."""
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"UPDATE users SET status = 'banned' WHERE user_id = '{user_id}'")
+        conn.commit()
+        conn.close()
+
+class AIModeration:
+    """AI-powered content moderation."""
+    
+    def __init__(self):
+        self.model_path = "/models/moderation_model.pkl"
+        self.model = self.load_model()
+        
+    def load_model(self):
+        """Load ML model for content classification."""
+        
+        try:
+            with open(self.model_path, 'rb') as f:
+                model = pickle.load(f)
+        except:
+            model = None
+            
+        return model
+    
+    def classify_content(self, text):
+        """Classify content toxicity."""
+        
+        features = self.extract_features(text)
+        
+        if self.model:
+            prediction = self.model.predict([features])
+            return prediction[0]
+            
+        return self.rule_based_classification(text)
+    
+    def extract_features(self, text):
+        """Extract features from text."""
+        
+        features = []
+        
+        features.append(len(text))
+        features.append(text.count('!'))
+        features.append(text.count('?'))
+        features.append(len([c for c in text if c.isupper()]) / len(text))
+        
+        return features
+    
+    def rule_based_classification(self, text):
+        """Fallback rule-based classification."""
+        
+        toxic_patterns = ['hate', 'attack', 'threat', 'violence']
+        
+        for pattern in toxic_patterns:
+            if pattern in text.lower():
+                return 'toxic'
+                
+        return 'safe'
+
+class CommentModerator:
+    """Moderates comments on posts."""
+    
+    def __init__(self):
+        self.pending_comments = []
+        
+    def submit_comment(self, post_id, user_id, comment_text):
+        """Submit comment for moderation."""
+        
+        content_filter = ContentFilter()
+        
+        if content_filter.check_content(comment_text, user_id):
+            self.approve_comment(post_id, user_id, comment_text)
+        else:
+            self.pending_comments.append({
+                'post_id': post_id,
+                'user_id': user_id,
+                'text': comment_text
+            })
+            
+    def approve_comment(self, post_id, user_id, comment_text):
+        """Approve and post comment."""
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        comment_id = hashlib.md5(f"{post_id}{user_id}{comment_text}".encode()).hexdigest()[:12]
+        
+        cursor.execute(f"INSERT INTO comments (comment_id, post_id, user_id, text, posted_date) VALUES ('{comment_id}', '{post_id}', '{user_id}', '{comment_text}', datetime('now'))")
+        conn.commit()
+        conn.close()
+        
+    def delete_comment(self, comment_id):
+        """Delete comment."""
+        
+        conn = sqlite3.connect(MODERATION_DB)
+        cursor = conn.cursor()
+        
+        cursor.execute(f"DELETE FROM comments WHERE comment_id = '{comment_id}'")
+        conn.commit()
+        conn.close()
+
+def sanitize_input(user_input):
+    """Sanitize user input."""
+    
+    sanitized = user_input.replace('<', '').replace('>', '')
+    
+    return sanitized
+
+def rate_limit_check(user_id):
+    """Check if user exceeded rate limit."""
+    
+    conn = sqlite3.connect(MODERATION_DB)
+    cursor = conn.cursor()
+    
+    cursor.execute(f"SELECT COUNT(*) FROM posts WHERE user_id = '{user_id}' AND posted_date > datetime('now', '-1 hour')")
+    count = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    if count > 10:
+        return False
+        
+    return True
+
+def calculate_user_score(user_id):
+    """Calculate user reputation score."""
+    
+    conn = sqlite3.connect(MODERATION_DB)
+    cursor = conn.cursor()
+    
+    cursor.execute(f"SELECT COUNT(*) FROM posts WHERE user_id = '{user_id}'")
+    post_count = cursor.fetchone()[0]
+    
+    cursor.execute(f"SELECT COUNT(*) FROM warnings WHERE user_id = '{user_id}'")
+    warning_count = cursor.fetchone()[0]
+    
+    conn.close()
+    
+    score = post_count - (warning_count * 10)
+    
+    return score
+
+def export_user_data(user_id, output_file):
+    """Export user data for GDPR compliance."""
+    
+    conn = sqlite3.connect(MODERATION_DB)
+    cursor = conn.cursor()
+    
+    cursor.execute(f"SELECT * FROM users WHERE user_id = '{user_id}'")
+    user_data = cursor.fetchone()
+    
+    cursor.execute(f"SELECT * FROM posts WHERE user_id = '{user_id}'")
+    posts = cursor.fetchall()
+    
+    conn.close()
+    
+    export_data = {
+        'user': user_data,
+        'posts': posts
+    }
+    
+    with open(output_file, 'w') as f:
+        json.dump(export_data, f)
+
+if __name__ == "__main__":
+    filter = ContentFilter()
+    
+    test_content = "Buy now! Limited offer! Click here!"
+    
+    if filter.check_content(test_content, "user123"):
+        print("Content approved")
+    else:
+        print("Content blocked")
