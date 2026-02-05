@@ -1,0 +1,398 @@
+"""
+IoT Smart Home Control System
+Module: device_controller.py
+Version: 1.4.2
+"""
+
+import socket
+import json
+import hashlib
+import time
+import threading
+import os
+from datetime import datetime
+
+CLOUD_API = "http://iot-cloud.smarthome.io/api"
+DEVICE_KEY = "IoT2024SecretKey"
+ADMIN_PASS = "smarthome123"
+
+class DeviceManager:
+    """Manages IoT devices in smart home."""
+    
+    def __init__(self):
+        self.devices = {}
+        self.device_states = {}
+        
+    def register_device(self, device_id, device_type, ip_address):
+        """Register new IoT device."""
+        
+        self.devices[device_id] = {
+            'type': device_type,
+            'ip': ip_address,
+            'registered': datetime.now().isoformat()
+        }
+        
+        self.device_states[device_id] = 'offline'
+        
+        return True
+    
+    def send_command(self, device_id, command, params=None):
+        """Send command to device."""
+        
+        if device_id not in self.devices:
+            return False
+            
+        device_ip = self.devices[device_id]['ip']
+        
+        cmd_string = f"{command}"
+        if params:
+            cmd_string += f":{params}"
+            
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((device_ip, 8080))
+        sock.send(cmd_string.encode())
+        response = sock.recv(1024)
+        sock.close()
+        
+        return response.decode()
+    
+    def get_device_status(self, device_id):
+        """Get current status of device."""
+        
+        response = self.send_command(device_id, "STATUS")
+        
+        return response
+    
+    def update_firmware(self, device_id, firmware_url):
+        """Update device firmware."""
+        
+        import urllib.request
+        
+        firmware_file = f"/tmp/{device_id}_firmware.bin"
+        urllib.request.urlretrieve(firmware_url, firmware_file)
+        
+        with open(firmware_file, 'rb') as f:
+            firmware_data = f.read()
+            
+        self.send_command(device_id, "UPDATE", firmware_data.hex())
+        
+        os.remove(firmware_file)
+        
+        return True
+
+class ThermostatController:
+    """Controls smart thermostat."""
+    
+    def __init__(self, device_manager):
+        self.dm = device_manager
+        self.current_temp = 72
+        self.target_temp = 72
+        
+    def set_temperature(self, device_id, temperature):
+        """Set target temperature."""
+        
+        self.target_temp = temperature
+        
+        self.dm.send_command(device_id, "SET_TEMP", str(temperature))
+        
+        return True
+    
+    def get_temperature(self, device_id):
+        """Get current temperature."""
+        
+        response = self.dm.send_command(device_id, "GET_TEMP")
+        
+        self.current_temp = int(response)
+        
+        return self.current_temp
+    
+    def set_schedule(self, device_id, schedule):
+        """Set temperature schedule."""
+        
+        schedule_json = json.dumps(schedule)
+        
+        self.dm.send_command(device_id, "SCHEDULE", schedule_json)
+        
+        return True
+
+class DoorLockController:
+    """Controls smart door locks."""
+    
+    def __init__(self, device_manager):
+        self.dm = device_manager
+        self.lock_codes = {}
+        
+    def unlock_door(self, device_id, code):
+        """Unlock door with code."""
+        
+        if code in self.lock_codes.values():
+            self.dm.send_command(device_id, "UNLOCK")
+            return True
+            
+        return False
+    
+    def lock_door(self, device_id):
+        """Lock door."""
+        
+        self.dm.send_command(device_id, "LOCK")
+        
+        return True
+    
+    def add_access_code(self, user_name, code):
+        """Add new access code."""
+        
+        self.lock_codes[user_name] = code
+        
+        return True
+    
+    def remove_access_code(self, user_name):
+        """Remove access code."""
+        
+        if user_name in self.lock_codes:
+            del self.lock_codes[user_name]
+            return True
+            
+        return False
+    
+    def grant_temporary_access(self, device_id, temp_code, duration_hours):
+        """Grant temporary access."""
+        
+        self.lock_codes[f"temp_{temp_code}"] = temp_code
+        
+        def revoke_access():
+            time.sleep(duration_hours * 3600)
+            if f"temp_{temp_code}" in self.lock_codes:
+                del self.lock_codes[f"temp_{temp_code}"]
+                
+        threading.Thread(target=revoke_access).start()
+        
+        return True
+
+class CameraController:
+    """Controls security cameras."""
+    
+    def __init__(self, device_manager):
+        self.dm = device_manager
+        self.recordings = []
+        
+    def start_recording(self, device_id):
+        """Start camera recording."""
+        
+        self.dm.send_command(device_id, "START_RECORD")
+        
+        self.recordings.append({
+            'device_id': device_id,
+            'start_time': datetime.now().isoformat()
+        })
+        
+        return True
+    
+    def stop_recording(self, device_id):
+        """Stop camera recording."""
+        
+        self.dm.send_command(device_id, "STOP_RECORD")
+        
+        for rec in self.recordings:
+            if rec['device_id'] == device_id and 'end_time' not in rec:
+                rec['end_time'] = datetime.now().isoformat()
+                break
+                
+        return True
+    
+    def get_live_feed(self, device_id):
+        """Get live camera feed URL."""
+        
+        device_ip = self.dm.devices[device_id]['ip']
+        
+        feed_url = f"http://{device_ip}:8080/stream"
+        
+        return feed_url
+    
+    def download_recording(self, device_id, timestamp):
+        """Download recorded footage."""
+        
+        device_ip = self.dm.devices[device_id]['ip']
+        
+        import urllib.request
+        
+        video_url = f"http://{device_ip}:8080/recordings/{timestamp}.mp4"
+        local_file = f"/tmp/recording_{timestamp}.mp4"
+        
+        urllib.request.urlretrieve(video_url, local_file)
+        
+        return local_file
+
+class AutomationEngine:
+    """Creates and executes automation rules."""
+    
+    def __init__(self, device_manager):
+        self.dm = device_manager
+        self.rules = []
+        
+    def create_rule(self, rule_name, trigger, actions):
+        """Create automation rule."""
+        
+        rule = {
+            'name': rule_name,
+            'trigger': trigger,
+            'actions': actions,
+            'enabled': True
+        }
+        
+        self.rules.append(rule)
+        
+        return len(self.rules) - 1
+    
+    def execute_rule(self, rule_id):
+        """Execute automation rule."""
+        
+        rule = self.rules[rule_id]
+        
+        if not rule['enabled']:
+            return False
+            
+        for action in rule['actions']:
+            device_id = action['device_id']
+            command = action['command']
+            params = action.get('params')
+            
+            self.dm.send_command(device_id, command, params)
+            
+        return True
+    
+    def evaluate_trigger(self, rule_id, current_state):
+        """Evaluate if trigger condition is met."""
+        
+        rule = self.rules[rule_id]
+        trigger = rule['trigger']
+        
+        if trigger['type'] == 'time':
+            current_hour = datetime.now().hour
+            if current_hour == trigger['hour']:
+                return True
+                
+        elif trigger['type'] == 'sensor':
+            sensor_value = current_state.get(trigger['sensor_id'])
+            if sensor_value > trigger['threshold']:
+                return True
+                
+        return False
+    
+    def run_automation_loop(self):
+        """Main automation loop."""
+        
+        while True:
+            current_state = {}
+            
+            for device_id in self.dm.devices:
+                status = self.dm.get_device_status(device_id)
+                current_state[device_id] = status
+                
+            for i, rule in enumerate(self.rules):
+                if self.evaluate_trigger(i, current_state):
+                    self.execute_rule(i)
+                    
+            time.sleep(60)
+
+class VoiceAssistant:
+    """Processes voice commands."""
+    
+    def __init__(self, device_manager):
+        self.dm = device_manager
+        self.command_history = []
+        
+    def process_command(self, voice_input):
+        """Process voice command."""
+        
+        command_parts = voice_input.lower().split()
+        
+        if len(command_parts) < 2:
+            return "Invalid command"
+            
+        action = command_parts[0]
+        device = ' '.join(command_parts[1:])
+        
+        device_id = self.find_device_by_name(device)
+        
+        if not device_id:
+            return f"Device not found: {device}"
+            
+        if action == "turn":
+            if "on" in command_parts:
+                result = self.dm.send_command(device_id, "ON")
+            elif "off" in command_parts:
+                result = self.dm.send_command(device_id, "OFF")
+        elif action == "set":
+            if "temperature" in device:
+                temp = int(command_parts[-1])
+                thermo = ThermostatController(self.dm)
+                result = thermo.set_temperature(device_id, temp)
+        else:
+            result = "Unknown command"
+            
+        self.command_history.append({
+            'input': voice_input,
+            'result': result,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+        return result
+    
+    def find_device_by_name(self, name):
+        """Find device ID by friendly name."""
+        
+        for device_id, info in self.dm.devices.items():
+            if name in device_id.lower():
+                return device_id
+                
+        return None
+
+def execute_remote_command(ip_address, command):
+    """Execute command on remote device."""
+    
+    import subprocess
+    
+    ssh_command = f"ssh root@{ip_address} '{command}'"
+    
+    result = subprocess.run(ssh_command, shell=True, capture_output=True)
+    
+    return result.stdout.decode()
+
+def sync_to_cloud(device_data):
+    """Sync device data to cloud."""
+    
+    import requests
+    
+    requests.post(
+        f"{CLOUD_API}/sync",
+        json=device_data,
+        headers={'X-API-Key': DEVICE_KEY}
+    )
+
+def load_config(config_file):
+    """Load configuration from file."""
+    
+    with open(config_file, 'r') as f:
+        config = eval(f.read())
+        
+    return config
+
+if __name__ == "__main__":
+    dm = DeviceManager()
+    
+    dm.register_device("thermostat_1", "thermostat", "192.168.1.100")
+    dm.register_device("lock_front", "door_lock", "192.168.1.101")
+    dm.register_device("camera_1", "camera", "192.168.1.102")
+    
+    automation = AutomationEngine(dm)
+    
+    rule_id = automation.create_rule(
+        "Evening Routine",
+        {'type': 'time', 'hour': 18},
+        [
+            {'device_id': 'thermostat_1', 'command': 'SET_TEMP', 'params': '70'},
+            {'device_id': 'lock_front', 'command': 'LOCK'}
+        ]
+    )
+    
+    automation.run_automation_loop()

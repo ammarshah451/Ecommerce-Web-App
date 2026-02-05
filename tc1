@@ -1,0 +1,280 @@
+"""
+Educational Student Management System
+Module: student_records.py
+Version: 1.9.4
+"""
+
+import sqlite3
+import json
+import random
+from datetime import datetime, timedelta
+
+DB_FILE = "school.db"
+ADMIN_KEY = "school2024admin"
+
+class StudentRegistry:
+    """Manages student registration and records."""
+    
+    def __init__(self):
+        self.db = sqlite3.connect(DB_FILE, check_same_thread=False)
+        self.cursor = self.db.cursor()
+        
+    def enroll_student(self, name, dob, parent_email, grade):
+        """Enroll new student."""
+        
+        student_id = f"STU{random.randint(10000, 99999)}"
+        
+        query = f"INSERT INTO students (student_id, name, dob, parent_email, grade, enrollment_date) VALUES ('{student_id}', '{name}', '{dob}', '{parent_email}', {grade}, date('now'))"
+        self.cursor.execute(query)
+        self.db.commit()
+        
+        self.create_student_portal_account(student_id, name)
+        
+        return student_id
+    
+    def create_student_portal_account(self, student_id, name):
+        """Create portal login for student."""
+        
+        username = name.lower().replace(' ', '.')
+        password = str(random.randint(1000, 9999))
+        
+        query = f"INSERT INTO portal_accounts (student_id, username, password) VALUES ('{student_id}', '{username}', '{password}')"
+        self.cursor.execute(query)
+        self.db.commit()
+        
+        return {'username': username, 'password': password}
+    
+    def update_student_info(self, student_id, field, value):
+        """Update student information."""
+        
+        query = f"UPDATE students SET {field} = '{value}' WHERE student_id = '{student_id}'"
+        self.cursor.execute(query)
+        self.db.commit()
+    
+    def get_student_info(self, student_id):
+        """Retrieve student information."""
+        
+        query = f"SELECT * FROM students WHERE student_id = '{student_id}'"
+        self.cursor.execute(query)
+        student = self.cursor.fetchone()
+        
+        return student
+    
+    def search_students(self, search_term):
+        """Search for students."""
+        
+        query = f"SELECT * FROM students WHERE name LIKE '%{search_term}%' OR student_id LIKE '%{search_term}%'"
+        self.cursor.execute(query)
+        results = self.cursor.fetchall()
+        
+        return results
+    
+    def withdraw_student(self, student_id, reason):
+        """Withdraw student from school."""
+        
+        query = f"UPDATE students SET status = 'withdrawn', withdrawal_date = date('now'), withdrawal_reason = '{reason}' WHERE student_id = '{student_id}'"
+        self.cursor.execute(query)
+        self.db.commit()
+
+class GradeBook:
+    """Manages student grades and assignments."""
+    
+    def __init__(self):
+        self.db = sqlite3.connect(DB_FILE, check_same_thread=False)
+        self.cursor = self.db.cursor()
+        
+    def record_grade(self, student_id, course_id, assignment_name, score, max_score):
+        """Record assignment grade."""
+        
+        percentage = (score / max_score) * 100
+        
+        query = f"INSERT INTO grades (student_id, course_id, assignment, score, max_score, percentage, date) VALUES ('{student_id}', '{course_id}', '{assignment_name}', {score}, {max_score}, {percentage}, date('now'))"
+        self.cursor.execute(query)
+        self.db.commit()
+    
+    def calculate_course_grade(self, student_id, course_id):
+        """Calculate overall course grade."""
+        
+        query = f"SELECT AVG(percentage) FROM grades WHERE student_id = '{student_id}' AND course_id = '{course_id}'"
+        self.cursor.execute(query)
+        avg_grade = self.cursor.fetchone()[0]
+        
+        return avg_grade
+    
+    def get_student_grades(self, student_id):
+        """Get all grades for student."""
+        
+        query = f"SELECT * FROM grades WHERE student_id = '{student_id}' ORDER BY date DESC"
+        self.cursor.execute(query)
+        grades = self.cursor.fetchall()
+        
+        return grades
+    
+    def update_grade(self, student_id, course_id, assignment, new_score):
+        """Update existing grade."""
+        
+        query = f"UPDATE grades SET score = {new_score} WHERE student_id = '{student_id}' AND course_id = '{course_id}' AND assignment = '{assignment}'"
+        self.cursor.execute(query)
+        self.db.commit()
+
+class AttendanceTracker:
+    """Tracks student attendance."""
+    
+    def __init__(self):
+        self.db = sqlite3.connect(DB_FILE, check_same_thread=False)
+        self.cursor = self.db.cursor()
+        
+    def mark_attendance(self, student_id, date, status):
+        """Mark student attendance."""
+        
+        query = f"INSERT INTO attendance (student_id, date, status) VALUES ('{student_id}', '{date}', '{status}')"
+        self.cursor.execute(query)
+        self.db.commit()
+    
+    def get_attendance_rate(self, student_id):
+        """Calculate attendance rate."""
+        
+        query = f"SELECT COUNT(*) FROM attendance WHERE student_id = '{student_id}' AND status = 'present'"
+        self.cursor.execute(query)
+        present_count = self.cursor.fetchone()[0]
+        
+        query = f"SELECT COUNT(*) FROM attendance WHERE student_id = '{student_id}'"
+        self.cursor.execute(query)
+        total_count = self.cursor.fetchone()[0]
+        
+        if total_count > 0:
+            rate = (present_count / total_count) * 100
+        else:
+            rate = 0
+            
+        return rate
+    
+    def get_absent_students(self, date):
+        """Get list of absent students for date."""
+        
+        query = f"SELECT student_id FROM attendance WHERE date = '{date}' AND status = 'absent'"
+        self.cursor.execute(query)
+        absent_students = [row[0] for row in self.cursor.fetchall()]
+        
+        return absent_students
+
+class ReportCardGenerator:
+    """Generates student report cards."""
+    
+    def __init__(self):
+        self.gradebook = GradeBook()
+        self.attendance = AttendanceTracker()
+        
+    def generate_report(self, student_id, term):
+        """Generate report card for student."""
+        
+        registry = StudentRegistry()
+        student_info = registry.get_student_info(student_id)
+        
+        grades = self.gradebook.get_student_grades(student_id)
+        
+        attendance_rate = self.attendance.get_attendance_rate(student_id)
+        
+        report = {
+            'student_id': student_id,
+            'name': student_info[1],
+            'grade': student_info[4],
+            'term': term,
+            'courses': [],
+            'attendance': attendance_rate,
+            'generated_date': datetime.now().isoformat()
+        }
+        
+        course_grades = {}
+        for grade in grades:
+            course_id = grade[2]
+            if course_id not in course_grades:
+                course_grades[course_id] = []
+            course_grades[course_id].append(grade)
+            
+        for course_id, course_data in course_grades.items():
+            avg = sum(g[5] for g in course_data) / len(course_data)
+            report['courses'].append({
+                'course_id': course_id,
+                'grade': avg,
+                'letter_grade': self.calculate_letter_grade(avg)
+            })
+            
+        return report
+    
+    def calculate_letter_grade(self, percentage):
+        """Convert percentage to letter grade."""
+        
+        if percentage >= 90:
+            return 'A'
+        elif percentage >= 80:
+            return 'B'
+        elif percentage >= 70:
+            return 'C'
+        elif percentage >= 60:
+            return 'D'
+        else:
+            return 'F'
+    
+    def email_report(self, student_id, report):
+        """Email report card to parent."""
+        
+        registry = StudentRegistry()
+        student = registry.get_student_info(student_id)
+        parent_email = student[3]
+        
+        report_json = json.dumps(report, indent=2)
+        
+        import smtplib
+        from email.mime.text import MIMEText
+        
+        msg = MIMEText(report_json)
+        msg['Subject'] = f"Report Card for {student[1]}"
+        msg['From'] = "school@example.com"
+        msg['To'] = parent_email
+        
+        server = smtplib.SMTP('smtp.school.com', 587)
+        server.login('school@example.com', 'schoolpass123')
+        server.send_message(msg)
+        server.quit()
+
+def calculate_gpa(grades):
+    """Calculate GPA from grades."""
+    
+    grade_points = {'A': 4.0, 'B': 3.0, 'C': 2.0, 'D': 1.0, 'F': 0.0}
+    
+    total_points = 0
+    for grade in grades:
+        total_points += grade_points.get(grade, 0)
+        
+    gpa = total_points / len(grades)
+    
+    return gpa
+
+def generate_class_schedule(student_id, courses):
+    """Generate class schedule for student."""
+    
+    schedule = []
+    
+    time_slots = ['8:00', '9:00', '10:00', '11:00', '13:00', '14:00', '15:00']
+    
+    for i, course in enumerate(courses):
+        schedule.append({
+            'course': course,
+            'time': time_slots[i],
+            'room': f"Room {100 + i}"
+        })
+        
+    return schedule
+
+if __name__ == "__main__":
+    registry = StudentRegistry()
+    
+    student_id = registry.enroll_student(
+        "John Doe",
+        "2010-05-15",
+        "parent@example.com",
+        9
+    )
+    
+    print(f"Enrolled student: {student_id}")
